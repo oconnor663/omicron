@@ -502,52 +502,52 @@ impl BundleCollection {
         self: &Arc<Self>,
         dir: &Utf8TempDir,
     ) -> anyhow::Result<SupportBundleCollectionReport> {
-        let mut collection = Box::pin(self.collect_bundle_as_file(&dir));
-
         // We periodically check the state of the support bundle - if a user
         // explicitly cancels it, we should stop the collection process and
         // return.
         let work_duration = tokio::time::Duration::from_secs(5);
-        let mut yield_interval = tokio::time::interval_at(
+        let yield_interval = tokio::time::interval_at(
             tokio::time::Instant::now() + work_duration,
             work_duration,
         );
+        let timer_stream = tokio_stream::wrappers::IntervalStream::new(
+            yield_interval,
+        )
+        .then(async |_| {
+            // Timer fired mid-collection - let's check if we should stop.
+            trace!(
+                &self.log,
+                "Checking if Bundle Collection cancelled";
+                "bundle" => %self.bundle.id
+            );
+            self.datastore
+                .support_bundle_get(&self.opctx, self.bundle.id.into())
+                .await
+                .context("failed to get support bundle")
+        });
 
-        loop {
-            tokio::select! {
-                // Timer fired mid-collection - let's check if we should stop.
-                _ = yield_interval.tick() => {
-                    trace!(
+        let (report, _) = join_me_maybe::join!(
+            self.collect_bundle_as_file(&dir),
+            maybe bundle_result in timer_stream => {
+                // TODO(join_me_maybe): Currently this explicit type annotation is needed.
+                let bundle_result: anyhow::Result<SupportBundle> = bundle_result;
+                if !matches!(bundle_result?.state, SupportBundleState::Collecting) {
+                    warn!(
                         &self.log,
-                        "Checking if Bundle Collection cancelled";
-                        "bundle" => %self.bundle.id
+                        "Support Bundle cancelled - stopping collection";
+                        "bundle" => %self.bundle.id,
+                        "state" => ?self.bundle.state
                     );
-
-                    let bundle = self.datastore.support_bundle_get(
-                        &self.opctx,
-                        self.bundle.id.into()
-                    ).await?;
-                    if !matches!(bundle.state, SupportBundleState::Collecting) {
-                        warn!(
-                            &self.log,
-                            "Support Bundle cancelled - stopping collection";
-                            "bundle" => %self.bundle.id,
-                            "state" => ?self.bundle.state
-                        );
-                        anyhow::bail!("Support Bundle Cancelled");
-                    }
-                },
-                // Otherwise, keep making progress on the collection itself.
-                report = &mut collection => {
-                    info!(
-                        &self.log,
-                        "Bundle Collection completed";
-                        "bundle" => %self.bundle.id
-                    );
-                    return report;
-                },
-            }
-        }
+                    anyhow::bail!("Support Bundle Cancelled");
+                }
+            },
+        );
+        info!(
+            &self.log,
+            "Bundle Collection completed";
+            "bundle" => %self.bundle.id
+        );
+        report
     }
 
     async fn store_bundle_on_sled(

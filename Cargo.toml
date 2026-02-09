@@ -518,6 +518,7 @@ internet-checksum = "0.2"
 ipnetwork = { version = "0.21", features = ["schemars", "serde"] }
 ispf = { git = "https://github.com/oxidecomputer/ispf" }
 jiff = "0.2.15"
+join_me_maybe = "0.5.0"
 key-manager = { path = "key-manager" }
 kstat-rs = "0.2.4"
 libc = "0.2.174"
